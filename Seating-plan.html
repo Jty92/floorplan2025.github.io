@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Restaurant Seating Plan</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Tailwind for styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100">
+  <div id="root" class="p-4"></div>
+
+  <!-- React + ReactDOM + Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+    const STORAGE_KEY = "restaurantFloorPlan_v1";
+
+    async function loadShared() { return null; }
+    async function saveShared(data) { return; }
+
+    function RestaurantFloorPlan() {
+      // Layout (Table 5 = 10 seats, Table 6 wider so circles stay inside)
+      const initialTables = [
+        { id: 1, name: "Table 1", capacity: 15, rect: { left: "43%", top: "15%", width: "12%", height: "45%" } },
+        { id: 2, name: "Table 2", capacity: 15, rect: { left: "58%", top: "15%", width: "12%", height: "45%" } },
+        { id: 3, name: "Table 3", capacity: 13, rect: { left: "37%", top: "72%", width: "24%", height: "18%" } },
+        { id: 4, name: "Table 4", capacity: 15, rect: { left: "63%", top: "72%", width: "32%", height: "18%" } },
+        { id: 5, name: "Table 5", capacity: 10, rect: { left: "83%", top: "14%", width: "9%",  height: "30%" } },
+        { id: 6, name: "Table 6", capacity: 12, rect: { left: "73%", top: "53%", width: "22%", height: "16%" } },
+      ];
+
+      const [tables] = useState(initialTables);
+      const [selectedTable, setSelectedTable] = useState(null);
+
+      // roster: [{id, name, diet}]
+      const [roster, setRoster] = useState([
+        { id: "p1", name: "Jake", diet: "" },
+        { id: "p2", name: "Anastasiia", diet: "" },
+        { id: "p3", name: "Alex", diet: "Vegetarian" },
+        { id: "p4", name: "Sam", diet: "Nut allergy" },
+      ]);
+
+      // assignments: { [tableId]: { [seatIndex]: personId } }
+      const [assignments, setAssignments] = useState({});
+
+      const [assignModePersonId, setAssignModePersonId] = useState(null);
+      const [newName, setNewName] = useState("");
+      const [newDiet, setNewDiet] = useState("");
+
+      // Load stored data once
+      useEffect(() => {
+        (async () => {
+          try {
+            const shared = await loadShared();
+            if (shared && shared.roster && shared.assignments) {
+              setRoster(shared.roster);
+              setAssignments(shared.assignments);
+              return;
+            }
+          } catch(e) {
+            console.warn("Shared load failed", e);
+          }
+          try {
+            const raw = window.localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed.roster) setRoster(parsed.roster);
+              if (parsed.assignments) setAssignments(parsed.assignments);
+            }
+          } catch(e) {
+            console.warn("Local load failed", e);
+          }
+        })();
+      }, []);
+
+      // Save whenever things change
+      useEffect(() => {
+        const data = { roster, assignments };
+        try {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch(e) {
+          console.warn("Local save failed", e);
+        }
+        saveShared(data).catch(() => {});
+      }, [roster, assignments]);
+
+      const personById = (pid) => roster.find((p) => p.id === pid) || null;
+      const initials = (name) =>
+        name.trim().split(" ").filter(Boolean).map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+
+      const seatedCount = (tableId) => {
+        const t = assignments[tableId] || {};
+        return Object.keys(t).length;
+      };
+
+      const isPersonSeatedSomewhere = (pid) => {
+        for (const tid in assignments) {
+          const seats = assignments[tid] || {};
+          for (const si in seats) if (seats[si] === pid) return true;
+        }
+        return false;
+      };
+
+      const unseatPersonEverywhere = (pid, baseAssignments) => {
+        const a = { ...baseAssignments };
+        for (const tid in a) {
+          const copy = { ...a[tid] };
+          let changed = false;
+          for (const si in copy) {
+            if (copy[si] === pid) { delete copy[si]; changed = true; }
+          }
+          if (changed) a[tid] = copy;
+        }
+        return a;
+      };
+
+      const assignSeat = (tableId, seatIndex) => {
+        if (!assignModePersonId) {
+          // no assign mode -> click to clear if filled
+          setAssignments((prev) => {
+            const currentSeats = { ...(prev[tableId] || {}) };
+            if (currentSeats[seatIndex]) {
+              delete currentSeats[seatIndex];
+              return { ...prev, [tableId]: currentSeats };
+            }
+            return prev;
+          });
+          return;
+        }
+
+        const pid = assignModePersonId;
+        setAssignments((prev) => {
+          const cleared = unseatPersonEverywhere(pid, prev);
+          const tSeats = { ...(cleared[tableId] || {}) };
+          if (tSeats[seatIndex] === pid) {
+            delete tSeats[seatIndex];
+          } else {
+            tSeats[seatIndex] = pid;
+          }
+          return { ...cleared, [tableId]: tSeats };
+        });
+        // auto-exit assign mode
+        setAssignModePersonId(null);
+      };
+
+      const addToRoster = () => {
+        const name = newName.trim();
+        const diet = newDiet.trim();
+        if (!name) return;
+        const id = "p" + Math.random().toString(36).slice(2, 9);
+        setRoster((r) => [...r, { id, name, diet }]);
+        setNewName("");
+        setNewDiet("");
+      };
+
+      const removePerson = (pid) => {
+        const cleared = unseatPersonEverywhere(pid, assignments);
+        setAssignments(cleared);
+        setRoster((r) => r.filter((p) => p.id !== pid));
+        if (assignModePersonId === pid) setAssignModePersonId(null);
+      };
+
+      const unseatPerson = (pid) => {
+        const cleared = unseatPersonEverywhere(pid, assignments);
+        setAssignments(cleared);
+      };
+
+      // Build per-table assignment list
+      const assignmentList = useMemo(
+        () => tables.map((t) => {
+          const seats = assignments[t.id] || {};
+          const seatEntries = Object.keys(seats)
+            .map((k) => ({ idx: Number(k), pid: seats[k] }))
+            .sort((x, y) => x.idx - y.idx)
+            .map(({ idx, pid }) => {
+              const person = personById(pid);
+              return { seat: idx + 1, name: person?.name || "—", diet: person?.diet || "" };
+            });
+          return { tableName: t.name, items: seatEntries };
+        }),
+        [tables, assignments, roster]
+      );
+
+      const clearAllSeats = () => {
+        setAssignments({});
+        setAssignModePersonId(null);
+      };
+
+      // ---- Export to CSV (Excel) ----
+      const exportToCSV = () => {
+        // map person -> {table, seat}
+        const personSeat = {};
+        tables.forEach((t) => {
+          const seats = assignments[t.id] || {};
+          Object.keys(seats).forEach((k) => {
+            const pid = seats[k];
+            personSeat[pid] = { table: t.name, seat: Number(k) + 1 };
+          });
+        });
+
+        const rows = [];
+
+        // section 1: assignments
+        rows.push(["Assignments"]);
+        rows.push(["Table", "Seat", "Name", "Diet/Allergy"]);
+        tables.forEach((t) => {
+          const seats = assignments[t.id] || {};
+          Object.keys(seats)
+            .map((k) => ({ idx: Number(k), pid: seats[k] }))
+            .sort((a, b) => a.idx - b.idx)
+            .forEach(({ idx, pid }) => {
+              const p = personById(pid);
+              rows.push([
+                t.name,
+                idx + 1,
+                p?.name || "",
+                p?.diet || "",
+              ]);
+            });
+        });
+
+        // blank line
+        rows.push([]);
+        // section 2: roster
+        rows.push(["Roster"]);
+        rows.push(["Name", "Diet/Allergy", "Seated?", "Table", "Seat"]);
+        roster.forEach((p) => {
+          const seat = personSeat[p.id];
+          rows.push([
+            p.name,
+            p.diet || "",
+            seat ? "Yes" : "No",
+            seat ? seat.table : "",
+            seat ? seat.seat : "",
+          ]);
+        });
+
+        const csv = rows
+          .map((r) =>
+            r
+              .map((field) => {
+                const s = (field ?? "").toString();
+                return '"' + s.replace(/"/g, '""') + '"';
+              })
+              .join(",")
+          )
+          .join("\r\n");
+
+        const blob = new Blob([csv], {
+          type: "text/csv;charset=utf-8;",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "seating-plan.csv";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div className="w-full max-w-[1280px] mx-auto">
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between mb-4 gap-4">
+            <h1 className="text-2xl font-bold">Restaurant Floor Plan</h1>
+            <div className="flex gap-2 items-center self-start md:self-auto">
+              <button
+                onClick={exportToCSV}
+                className="px-3 py-1 rounded-2xl shadow border bg-white hover:bg-gray-50 text-sm"
+              >
+                Export to Excel
+              </button>
+              <button
+                onClick={clearAllSeats}
+                className="px-3 py-1 rounded-2xl shadow border bg-white hover:bg-gray-50 text-sm"
+              >
+                Clear all seats
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+            {/* Canvas */}
+            <div className="relative xl:col-span-8 w-full h-[520px] md:h-[720px] border-4 rounded-xl p-2 bg-white">
+              {/* Kitchen header */}
+              <div className="absolute left-[7%] right-[7%] top-2 h-10 rounded-lg bg-gray-100 flex items-center justify-center font-semibold text-gray-900">
+                Kitchen
+              </div>
+
+              {/* Bar note */}
+              <div className="absolute left-[6%] top-[12%] text-xs md:text-sm text-gray-900">
+                Bar tables (open for public)
+              </div>
+
+              {/* Bar block */}
+              <div className="absolute left-[6%] top-[16%] w-[30%] h-[55%] bg-gray-900 text-white rounded-lg border-2 border-gray-800 flex items-center justify-center text-2xl md:text-3xl font-bold">
+                Bar
+              </div>
+
+              {/* Door */}
+              <div className="absolute left-[10%] bottom-[13%] flex flex-col items-center gap-1 text-gray-900">
+                <div className="w-0 h-0 border-l-[24px] border-r-[24px] border-t-[36px] border-l-transparent border-r-transparent border-t-gray-600 md:border-l-[28px] md:border-r-[28px] md:border-t-[42px]" />
+                <span className="text-xs md:text-sm">Door</span>
+              </div>
+
+              {/* Window label */}
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-sm md:text-lg text-gray-900">
+                Window
+              </div>
+
+              {/* Booth seats label (visual only) */}
+              <div className="absolute right-[10%] bottom-4 text-xs md:text-sm text-gray-900">
+                Booth seats
+              </div>
+
+              {/* Side labels */}
+              <div className="absolute right-[3%] top-[8%] rotate-90 text-xs md:text-sm text-gray-900">
+                Tables
+              </div>
+              <div className="absolute right-[3%] top-[26%] -rotate-90 text-xs md:text-sm text-gray-900">
+                Booth seats
+              </div>
+
+              {/* Tables */}
+              {tables.map((table) => (
+                <div
+                  key={table.id}
+                  onClick={() => setSelectedTable(table.id)}
+                  className={
+                    "absolute border-2 rounded-lg p-2 cursor-pointer bg-white/95 backdrop-blur-sm hover:shadow " +
+                    (selectedTable === table.id
+                      ? "border-blue-500 ring-2 ring-blue-200"
+                      : "border-gray-500")
+                  }
+                  style={{ ...table.rect, position: "absolute" }}
+                  title={`${table.name} (capacity ${table.capacity})`}
+                >
+                  <div className="flex items-center justify-between mb-2 text-gray-900">
+                    <h3 className="font-semibold text-xs md:text-sm">{table.name}</h3>
+                    <span className="text-[10px] md:text-xs">
+                      {seatedCount(table.id)}/{table.capacity}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-[3px] md:gap-1">
+                    {Array.from({ length: table.capacity }).map((_, i) => {
+                      const pid = (assignments[table.id] || {})[i];
+                      const person = pid ? personById(pid) : null;
+                      const isAssigned = !!person;
+                      return (
+                        <button
+                          key={i}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            assignSeat(table.id, i);
+                          }}
+                          className={
+                            "w-5 h-5 md:w-6 md:h-6 rounded-full border-2 flex items-center justify-center text-[8px] md:text-[10px] font-bold " +
+                            (isAssigned
+                              ? "bg-blue-600 border-blue-700 text-white"
+                              : "bg-white border-gray-300 text-gray-900") +
+                            " hover:ring-2 hover:ring-blue-200"
+                          }
+                          aria-label={`Seat ${i + 1}`}
+                          title={
+                            person
+                              ? `${person.name}${person.diet ? " — " + person.diet : ""}`
+                              : `Seat ${i + 1}`
+                          }
+                        >
+                          {isAssigned ? initials(person.name) : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {/* Legend */}
+              <div className="absolute left-2 top-2 text-[10px] md:text-xs bg-white/90 backdrop-blur px-2 py-1 rounded border flex gap-4">
+                <div className="flex items-center gap-1">
+                  <span className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-blue-600 inline-block" /> Assigned
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-white border inline-block" /> Empty
+                </div>
+              </div>
+            </div>
+
+            {/* Right column */}
+            <div className="xl:col-span-4 space-y-4">
+              {/* People panel */}
+              <div className="p-3 rounded-xl border shadow-sm bg-white">
+                <h2 className="font-semibold mb-3">People</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                  <input
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="Name"
+                    className="border rounded px-2 py-1 text-sm"
+                  />
+                  <input
+                    value={newDiet}
+                    onChange={(e) => setNewDiet(e.target.value)}
+                    placeholder="Diet/allergy (optional)"
+                    className="border rounded px-2 py-1 text-sm"
+                  />
+                  <div className="col-span-1 md:col-span-2 flex gap-2">
+                    <button onClick={addToRoster} className="px-3 py-1 rounded border text-sm bg-white">
+                      Add person
+                    </button>
+                    {assignModePersonId && (
+                      <button
+                        onClick={() => setAssignModePersonId(null)}
+                        className="px-3 py-1 rounded border text-sm bg-white"
+                      >
+                        Exit Assign mode
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-1 max-h-[260px] overflow-auto">
+                  {roster.map((p) => {
+                    const selected = assignModePersonId === p.id;
+                    const seated = isPersonSeatedSomewhere(p.id);
+                    return (
+                      <div
+                        key={p.id}
+                        className={
+                          "flex items-center justify-between px-2 py-1 rounded border text-sm " +
+                          (selected ? "bg-blue-50 border-blue-300" : "bg-gray-50 border-gray-200")
+                        }
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex-shrink-0">
+                            {initials(p.name)}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="truncate" title={p.name}>
+                              {p.name}
+                            </div>
+                            {p.diet && (
+                              <div className="text-[11px] text-gray-600 truncate" title={p.diet}>
+                                {p.diet}
+                              </div>
+                            )}
+                          </div>
+                          {seated && (
+                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 flex-shrink-0">
+                              seated
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <button
+                            onClick={() => setAssignModePersonId(selected ? null : p.id)}
+                            className={
+                              "text-xs px-2 py-1 rounded border " +
+                              (selected ? "bg-blue-600 text-white border-blue-600" : "bg-white")
+                            }
+                          >
+                            {selected ? "Assigning…" : "Assign"}
+                          </button>
+                          <button
+                            onClick={() => unseatPerson(p.id)}
+                            className="text-xs px-2 py-1 rounded border bg-white"
+                          >
+                            Unseat
+                          </button>
+                          <button
+                            onClick={() => removePerson(p.id)}
+                            className="text-xs px-2 py-1 rounded border bg-white"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Assignments */}
+              <div className="p-3 rounded-xl border shadow-sm bg-white">
+                <h2 className="font-semibold mb-3">Assignments</h2>
+                <div className="space-y-3 text-sm">
+                  {assignmentList.map((t) => (
+                    <div key={t.tableName}>
+                      <div className="font-medium mb-1">{t.tableName}</div>
+                      {t.items.length === 0 ? (
+                        <div className="text-gray-500">No one assigned</div>
+                      ) : (
+                        <ul className="list-disc pl-5">
+                          {t.items.map((item, idx) => (
+                            <li key={idx}>
+                              Seat {item.seat}: {item.name}
+                              {item.diet ? " — " + item.diet : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 text-xs text-gray-600">
+            <p>
+              <strong>Tip:</strong> Click <em>Assign</em> next to a person, then click a seat to place
+              them. Assign mode turns off automatically after placing them. Without Assign mode,
+              clicking a filled seat clears it; clicking an empty seat does nothing. Use “Export to
+              Excel” to download a CSV of all assignments and the roster.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<RestaurantFloorPlan />);
+  </script>
+</body>
+</html>
